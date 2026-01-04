@@ -1,157 +1,290 @@
-# OpenKBP Grand Challenge 
+# OpenKBP Dose Prediction with MONAI
 
 ![](read-me-images/aapm.png)
-  
-The _open-kbp_ repository provides code that was intended to help get participants started with developing dose prediction models for the OpenKBP Challenge, which is summarized in our [paper](https://aapm.onlinelibrary.wiley.com/doi/epdf/10.1002/mp.14845). This repository has been repurposed to provide our community with an open framework for developing dose prediction methods. Note that researchers who are interested in developing their own plan optimization methods should refer to the [open-kbp-opt repository](https://github.com/ababier/open-kbp-opt).
 
- ![](read-me-images/pipeline.png)
+A MONAI-based 3D U-Net implementation for predicting radiation dose distributions in head-and-neck cancer patients. This is a refactored version of the [OpenKBP Grand Challenge](https://aapm.onlinelibrary.wiley.com/doi/epdf/10.1002/mp.14845) codebase, using PyTorch and MONAI instead of TensorFlow/Keras.
 
-**Advice**: The repository can be used on either a local machine or in the cloud (for free) using [Google Colab](https://colab.research.google.com). Google Colab is a great way to compete in OpenKBP without putting a burden on your existing hardware. The service provides high-quality CPUs and GPUs for free, however, your sessions are limited to consecutive 12 hours [[Frequently asked questions]](https://research.google.com/colaboratory/faq.html). 
+![](read-me-images/pipeline.png)
 
 ## Citation
-Please use our paper as the citation for this dataset or code repository:
 
-A. Babier, B. Zhang, R. Mahmood, K.L. Moore, T.G. Purdie, A.L. McNiven, T.C.Y. Chan, "[OpenKBP: The open-access knowledge-based planning grand challenge and dataset](https://aapm.onlinelibrary.wiley.com/doi/epdf/10.1002/mp.14845)," _Medical Physics_, Vol. 48, pp. 5549-5561, 2021.
+If you use this dataset or code, please cite the original paper:
 
-# Table of Contents
+> A. Babier, B. Zhang, R. Mahmood, K.L. Moore, T.G. Purdie, A.L. McNiven, T.C.Y. Chan, "[OpenKBP: The open-access knowledge-based planning grand challenge and dataset](https://aapm.onlinelibrary.wiley.com/doi/epdf/10.1002/mp.14845)," _Medical Physics_, Vol. 48, pp. 5549-5561, 2021.
+
+## Table of Contents
+
+- [Features](#features)
 - [Data](#data)
-- [What this code does](#what-this-code-does)
-- [Prerequisites](#prerequisites)
-- [Created folder structure](#created-folder-structure)
-- [Getting started...](#getting-started)
-  + [in Colab](#getting-started-in-colab)
-  + [on a local machine](#getting-started-on-a-local-machine)
-- [Running the code...](#running-the-code)
-  + [in Colab](#running-the-code-in-colab)
-  + [on a local machine](#running-the-code-on-local-machine)
-- [Competition results](#competition-results)
-  + [First place](#first-place)
-  + [Runners-up](#runners-up)
-  + [Final testing phase leaderboard](#final-testing-phase-leaderboard)
-- [Sample research that uses the OpenKBP dataset](#sample-research-that-uses-the-openkbp-dataset)
-- [Competition organizers](#competition-organizers)
+- [Project Structure](#project-structure)
+- [Installation](#installation)
+- [Usage](#usage)
+  - [Quick Test](#quick-test)
+  - [Full Training](#full-training)
+  - [Command Line Options](#command-line-options)
+- [GPU Configuration](#gpu-configuration)
+- [Evaluation Metrics](#evaluation-metrics)
+- [Output Files](#output-files)
+- [Legacy Code](#legacy-code)
+- [Competition Results](#competition-results)
+
+## Features
+
+- **MONAI 3D U-Net**: Modern PyTorch-based architecture with residual units
+- **Modular Design**: Clean separation of dataset, model, transforms, losses, and evaluation
+- **Flexible Training**: Configurable batch size, filters, learning rate, and epochs
+- **Data Augmentation**: Random flips, rotations, and Gaussian noise
+- **Automatic Checkpointing**: Saves best model and periodic checkpoints
+- **Comprehensive Evaluation**: Dose score (MAE) and DVH metrics
+- **Result Exports**: JSON summaries, CSV losses, and visualization plots
+- **Timing & ETA**: Real-time epoch timing with estimated completion time
 
 ## Data
-The details of the provided data are available in our paper [OpenKBP: The open-access knowledge-based planning grand challenge and dataset](https://aapm.onlinelibrary.wiley.com/doi/epdf/10.1002/mp.14845). In short, we provide data for 340 patients who were treated for head-and-neck cancer with intensity modulated radiation therapy. The data is split into training (*n*=200), validation (*n*=40), and testing (*n*=100) sets. Every patient in these datasets has a dose distribution, CT images, structure masks, a feasible dose mask (i.e., mask of where dose can be non-zero), and voxel dimensions.
 
-## What this code does
-This code will train a small neural network to predict dose. There are five PY files that are required to run the _main\_notebook.ipynb_ and _main.py_ files. Below, we summarize the functionality of each PY file, but more details are provided in the files themselves.
-  
-  - _data_loader.py_: Contains the _DataLoader_ class, which loads the data from the dataset in a standard format. Several data formats (e.g., dose-volume histogram) are available to cater to different modeling techniques.
-  - _dose_evaluation_class.py_: Contains the _EvaluateDose_ class, which is used to evaluate the competition metrics.
-  - _general_functions.py_: Contain several functions with a variety of purposes. 
-  - _network_architectures.py_: Contains the _DefineDoseFromCT_ class, which builds the architecture for a basic U-Net model. This class is inherited by the _PredictionModel_ class. Please note that we intentionally included a network architecture that is **not** state-of-the-art. It is only included to serve as a placeholder for your more sophisticated models. 
-  - _network_functions.py_: Contains the _PredictionModel_ class, which applies a series of methods on a model constructed in _DefineDoseFromCT_. 
+The dataset contains 340 head-and-neck cancer patients treated with intensity modulated radiation therapy (IMRT):
 
-## Prerequisites
-The following are required to run the given notebook, however, you may use any hardware or software you'd like. 
+| Set | Patients | Patient IDs |
+|-----|----------|-------------|
+| Training | 200 | pt_1 - pt_200 |
+| Validation | 40 | pt_201 - pt_240 |
+| Testing | 100 | pt_241 - pt_340 |
 
-### For running on Google Colab
-- Standard Google account 
+Each patient folder contains:
 
-### For running on a local machine
-- Linux
-- Python 3.10.9
-- NVIDIA GPU with CUDA and CuDNN (recommended)
+| File | Description |
+|------|-------------|
+| `ct.csv` | CT scan (sparse format) |
+| `dose.csv` | Reference dose distribution (sparse format) |
+| `possible_dose_mask.csv` | Mask where dose can be non-zero |
+| `voxel_dimensions.csv` | Physical voxel size (mm) |
+| `{ROI}.csv` | Structure masks for organs and targets |
 
+**Regions of Interest (ROIs):**
+- **Organs at Risk**: Brainstem, SpinalCord, RightParotid, LeftParotid, Esophagus, Larynx, Mandible
+- **Targets**: PTV56, PTV63, PTV70
 
-## Created folder structure
-This repository will create a file structure that branches from a directory called _open-kbp_. The file structure will keep information about predictions from a model (called baseline in this example) and the model itself in the _results_ directory. All the data from the OpenKBP competition (with the original train/validation/test splits) is available under the directory called _provided-data_. This code will also make a directory called _submissions_ to house the zip files that can be submitted to the leader boards on CodaLab. Use this folder tree as a reference (it will more or less build itself).
-   
-```
-open-kbp
-├── provided-data
-│   ├── train-pats
-│   │   ├── pt_*
-│   │       ├── *.csv
-│   ├── valid-pats
-│   │   ├── pt_*
-│   │       ├── *.csv
-│   └── test-pats
-│       ├── pt_*
-│           ├── *.csv
-├── results
-│   ├── baseline
-│   │   ├── models
-│   │   │   ├── epoch_*.h5
-│   │   ├── validation-predictions
-│   │   │   ├── pt_*.csv
-│   │   └── test-predictions
-│   │       ├── pt_*.csv
-│   ├── **Structure repeats when new model is made**
-└── submissions
-    ├── baseline.zip
-    ├── **Structure repeats when new model is made**   
+## Project Structure
 
 ```
+open-kbp/
+├── src/                          # Main source package
+│   ├── __init__.py               # Public API exports
+│   ├── constants.py              # Project constants (ROIs, shapes, config)
+│   ├── data_utils.py             # Sparse/dense data conversion
+│   ├── dataset.py                # OpenKBPDataset PyTorch class
+│   ├── evaluation.py             # Dose and DVH metric computation
+│   ├── export.py                 # JSON/CSV result exports
+│   ├── losses.py                 # Custom masked loss functions
+│   ├── model.py                  # DosePredictionModel trainer
+│   ├── transforms.py             # MONAI data transforms
+│   └── visualization.py          # Training plots and dose visualization
+├── provided-data/                # Patient data
+│   ├── train-pats/               # 200 training patients
+│   ├── validation-pats/          # 40 validation patients
+│   └── test-pats/                # 100 test patients
+├── legacy/                       # Original TensorFlow/Keras code
+├── results/                      # Training outputs (gitignored)
+├── train_monai.py                # Main training script
+├── requirements.txt              # Python dependencies
+└── README.md
+```
 
-## Getting started
- Below, we provide instructions for setting up this repository in Google Colab and on a local machine. 
-   
-### Getting started in Colab
-This should be the simplest way to compete in OpenKBP because the software required for dose prediction is installed in the cloud. It also means you can be competitive in OpenKBP without expensive hardware. 
+## Installation
 
-1. Head to <a href="https://colab.research.google.com" _target='blank'>Colab</a>
-1. Select 'GitHub' &rarr; paste the link to <a href="main_notebook.ipynb" _target='blank'>`main_notebook.ipynb`</a> &rarr; ENTER &rarr; click the file name
-1. In the Google Colab toolbar select: Runtime &rarr; Change Runtime. This will open another popup where you should ensure the runtime type is Python 3 and the hardware accelerator is GPU.
+### Prerequisites
 
-You're all set for executing the code.
+- Python 3.10+
+- NVIDIA GPU with CUDA (recommended)
 
-### Getting started on a local machine
-1. Make a virtual environment and activate it
-    ```
-    virtualenv -p python3 open-kbp-venv
-    source open-kbp-venv/bin/activate
-    ```
-2. Clone this repository, navigate to its directory, and install the requirements. Note, that to run Tensorflow 2.1 with a GPU, you may need to build Tensorflow 2.1 from source. The official instructions to build from source are [here](https://www.tensorflow.org/install/source), but I found the third party guide [here](https://gist.github.com/kmhofmann/e368a2ebba05f807fa1a90b3bf9a1e03) more useful. 
+### Setup
 
-    ```
-    git clone https://github.com/ababier/open-kbp
-    cd open-kbp
-    pip3 install -r requirements.txt
-    ```
+```bash
+# Clone repository
+git clone https://github.com/ababier/open-kbp
+cd open-kbp
 
-## Running the code
-Running the code in either platform should be straightforward. Any errors are likely the result of data being in an unexpected directory. If the code is running correctly then the progress of the neural network should print out to an output cell (Colab) or the commandline (local machine).
- 
-### Running the code in Colab
-In the Google Colab toolbar select: Runtime > Run all; you can also use the key-binding <Ctrl+F9>.
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+# or: venv\Scripts\activate  # Windows
 
-**OR**
+# Install dependencies
+pip install -r requirements.txt
+```
 
-Run each cell individually by clicking the play button in each cell; you can also use the key binding <Shift+Enter> to run a highlighted cell.
+### Dependencies
 
-### Running the code on local machine
-Run the main file in your newly created virtual environment.
-    ```
-    python3 main.py
-    ```
-Alternatively, you may run the notebook in Jupyter Notebook or Jupyter Lab locally, but only after commenting out the commands related to Google Drive and changing the paths for where the provided data is stored and where the results are saved.
+- PyTorch >= 2.0.0
+- MONAI >= 1.3.0
+- NumPy, Pandas, Matplotlib, tqdm
 
-## Competition results
-The OpenKBP Challenge attracted 195 participants from 28 counties. The competition started February 21, 2020 and concluded on June 1, 2020. A total of 1750 submissions were made to the validation phase by the 44 teams (consisting of 73 people) who made at least 1 submission. In the testing phase, 28 teams (consisting of 54 people) made submissions. The top teams in this competition are highlighted below. **Note that the dose for patients in the validation and testing data was only published on June 23, 2020 after the Challenge concluded.  
+## Usage
 
-### First place
+### Quick Test
 
-**Dose and DVH Stream**: Shuolin Liu, Jingjing Zhang, Teng Li1, Hui Yan, Jianfei Liu, *LSL AnHui University*, Anhui University, China. [\[GitHub Repository\]](https://github.com/LSL000UD/RTDosePrediction) [\[Paper\]](https://aapm.onlinelibrary.wiley.com/doi/full/10.1002/mp.15034)
+Test the setup with 10% of data:
 
-### Runners-up
+```bash
+python train_monai.py --data-fraction 0.1 --epochs 5
+```
 
-**Dose Stream**: Mary P. Gronberg, Skylar S. Gay, Tucker J. Netherton, Dong Joo Rhee, Laurence E. Court, Carlos E. Cardenas, *SuperPod*, MD Anderson Cancer Center, United States. [\[Paper\]](https://aapm.onlinelibrary.wiley.com/doi/full/10.1002/mp.14827) 
+### Full Training
 
-**DVH Stream**: Lukas Zimmermann, Erik Faustmann, Christian Ramsl, Dietmar Georg, Gerd Heilemann, *PTV - Prediction Team Vienna*, Medical University of Vienna, Austria. [\[Paper\]](https://aapm.onlinelibrary.wiley.com/doi/full/10.1002/mp.14774)
- 
-### Final testing phase leaderboard 
-This leaderboard contains the final results of this challenge, which is the first controlled and blinded test of KBP method implementations from several institutions. 
- 
- ![](read-me-images/final_leaderboard.png)
+```bash
+# Default settings (100 epochs)
+python train_monai.py --epochs 100
 
- Researchers can still sign up and submit to a live leaderboard on [CodaLab](https://competitions.codalab.org/competitions/?q=openkbp). However, **since the results are no longer blinded there is no way to ensure the validation and test set was used as intended (i.e., without any peaking at test data)**. 
+# Recommended for RTX 3060 12GB
+python train_monai.py --epochs 100 --batch-size 4 --filters 64
 
-## Sample research that uses the OpenKBP dataset
- - D. Nguyen, A.S. Barkousaraie, G. Bohara, A. Balagopal, R. McBeth, M. Lin, S. Jiang, "[A comparison of Monte Carlo dropout and bootstrap aggregation on the performance and uncertainty estimation in radiation therapy dose prediction with deep learning neural networks](https://iopscience.iop.org/article/10.1088/1361-6560/abe04f)," _Physics in Medicine & Biology_, Vol. 60, p. 054002, 2021.
-- I. Isler, C. Lisle, J. Rineer, P. Kelly, D. Turgut, J. Ricci, U. Bagci, "[Enhancing Organ at Risk Segmentation with Improved Deep Neural Networks](https://arxiv.org/abs/2202.01866)," arXiv:2202.01866, 2022.
+# Recommended for A100 40GB
+python train_monai.py --epochs 45 --batch-size 16 --filters 96 --num-workers 8
+```
 
-## Competition organizers
-OpenKBP was organized by Aaron Babier, Binghao Zhang, Rafid Mahmood, and Timothy Chan (University of Toronto, Canada); Andrea McNiven and Thomas Purdie (Princess Margaret Cancer Center, Canada); Kevin Moore (UC San Diego, USA). This challenge was supported by [The American Association of Physicists in Medicine](https://www.aapm.org/GrandChallenge/OpenKBP/). 
+### Command Line Options
 
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--model-name` | `monai_unet` | Name for the model |
+| `--epochs` | `100` | Number of training epochs |
+| `--batch-size` | `2` | Batch size |
+| `--lr` | `1e-4` | Learning rate |
+| `--filters` | `32` | Initial U-Net filters (doubles each level) |
+| `--save-freq` | `10` | Save checkpoint every N epochs |
+| `--num-workers` | `4` | Data loading workers |
+| `--data-fraction` | `1.0` | Fraction of data to use (for testing) |
+| `--test-split` | `0.1` | Fraction of training data for test holdout |
+| `--no-resume` | `False` | Start fresh (don't resume from checkpoint) |
+| `--skip-eval` | `False` | Skip evaluation after training |
+| `--device` | `auto` | Device (cuda/cpu) |
+
+## GPU Configuration
+
+### Memory Usage Guide
+
+| GPU | VRAM | Recommended Config |
+|-----|------|-------------------|
+| RTX 3060 | 12GB | `--batch-size 4 --filters 64` (~77M params) |
+| RTX 3090 | 24GB | `--batch-size 8 --filters 96` (~173M params) |
+| A100 | 40GB | `--batch-size 16 --filters 96` (~173M params) |
+| A100 | 80GB | `--batch-size 32 --filters 128` (~308M params) |
+
+### Model Size Reference
+
+| Filters | Parameters |
+|---------|------------|
+| 32 | ~19M |
+| 64 | ~77M |
+| 96 | ~173M |
+| 128 | ~308M |
+
+## Evaluation Metrics
+
+### Dose Score (MAE)
+
+Mean Absolute Error between predicted and reference dose across all voxels in the possible dose mask.
+
+```
+Dose Score = Σ|predicted - reference| / num_voxels
+```
+
+- **Units**: Gray (Gy)
+- **Lower is better**
+- **Competition benchmark**: ~2-3 Gy
+
+### DVH Score
+
+Mean absolute difference in Dose-Volume Histogram metrics:
+
+| Structure Type | Metrics |
+|----------------|---------|
+| Organs at Risk | D_0.1_cc (dose to hottest 0.1cc), Mean dose |
+| Targets (PTVs) | D_99, D_95, D_1 |
+
+- **Units**: Gray (Gy)
+- **Lower is better**
+- **Competition benchmark**: ~1.5-2.5 Gy
+
+## Output Files
+
+Results are saved to `results/{model_name}_{data_pct}pct_{timestamp}/`:
+
+```
+results/monai_unet_100pct_20260104_120000/
+├── models/
+│   ├── best_model.pt              # Best validation loss
+│   └── epoch_100.pt               # Final checkpoint
+├── exports/
+│   ├── training_summary.json      # Complete training summary
+│   ├── evaluation_results.json    # Validation metrics
+│   ├── test_results.json          # Test set metrics
+│   └── losses.csv                 # Epoch-by-epoch losses
+├── validation-predictions/        # Predicted dose CSVs
+├── test-predictions/              # Test set predictions
+└── training_history.png           # Loss curve plot
+```
+
+### Sample JSON Output
+
+```json
+{
+  "timestamp": "2026-01-04T12:00:00",
+  "model_name": "monai_unet_100pct_20260104_120000",
+  "config": {
+    "num_epochs": 100,
+    "batch_size": 4,
+    "learning_rate": 0.0001,
+    "num_filters": 64
+  },
+  "training": {
+    "best_val_loss": 3.45,
+    "best_epoch": 85,
+    "total_time_minutes": 92.5
+  },
+  "evaluation": {
+    "dose_score": 3.21,
+    "dvh_score": 2.15,
+    "num_patients": 40
+  }
+}
+```
+
+## Legacy Code
+
+The original TensorFlow/Keras implementation is preserved in `legacy/`:
+
+```
+legacy/
+├── provided_code/         # Original Python modules
+├── main.py                # Original training script
+├── main_notebook.ipynb    # Original Jupyter notebook
+└── requirements.txt       # TensorFlow dependencies
+```
+
+## Competition Results
+
+The OpenKBP Challenge (Feb-June 2020) attracted 195 participants from 28 countries.
+
+### Winners
+
+**First Place (Dose & DVH)**: LSL AnHui University, China
+[\[GitHub\]](https://github.com/LSL000UD/RTDosePrediction) [\[Paper\]](https://aapm.onlinelibrary.wiley.com/doi/full/10.1002/mp.15034)
+
+**Runner-up (Dose)**: SuperPod, MD Anderson Cancer Center, USA
+[\[Paper\]](https://aapm.onlinelibrary.wiley.com/doi/full/10.1002/mp.14827)
+
+**Runner-up (DVH)**: PTV - Prediction Team Vienna, Austria
+[\[Paper\]](https://aapm.onlinelibrary.wiley.com/doi/full/10.1002/mp.14774)
+
+### Final Leaderboard
+
+![](read-me-images/final_leaderboard.png)
+
+## License
+
+See [LICENSE](LICENSE) file.
+
+## Acknowledgments
+
+- Original OpenKBP organizers: Aaron Babier, Binghao Zhang, Rafid Mahmood, Timothy Chan (University of Toronto); Andrea McNiven, Thomas Purdie (Princess Margaret Cancer Center); Kevin Moore (UC San Diego)
+- Supported by [The American Association of Physicists in Medicine](https://www.aapm.org/GrandChallenge/OpenKBP/)
