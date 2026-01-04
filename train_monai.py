@@ -186,7 +186,7 @@ def main():
         test_patients = train_patients[-num_test:]  # Take from end
         train_patients = train_patients[:-num_test]  # Keep the rest for training
 
-    print(f"\nDataset sizes:")
+    print("\nDataset sizes:")
     print(f"  Training: {len(train_patients)} patients")
     print(f"  Validation: {len(val_patients)} patients")
     print(f"  Test (held out): {len(test_patients)} patients")
@@ -267,6 +267,7 @@ def main():
 
     # Evaluation
     evaluation_results = {}
+    prediction_dir = None
     if not args.skip_eval:
         # Load best model and make predictions on validation set
         print("\nGenerating predictions on validation set...")
@@ -318,7 +319,7 @@ def main():
 
     # Print timing summary
     if timing_summary:
-        print(f"\nTiming Summary:")
+        print("\nTiming Summary:")
         print(
             f"  Total training time: {timing_summary['total_time_minutes']:.1f} minutes"
         )
@@ -326,6 +327,7 @@ def main():
 
     # Run inference on held-out test set
     test_results = {}
+    test_prediction_dir = None
     if test_patients and not args.skip_eval:
         print("\n" + "=" * 50)
         print("Running inference on held-out test set...")
@@ -371,9 +373,9 @@ def main():
     print(f"  - Model checkpoints: {model.model_dir}")
     print(f"  - Training history: {model.results_dir / 'training_history.png'}")
     print(f"  - Exports: {exports_dir}")
-    if not args.skip_eval:
+    if prediction_dir is not None:
         print(f"  - Validation predictions: {prediction_dir}")
-    if test_patients and not args.skip_eval:
+    if test_prediction_dir is not None:
         print(f"  - Test predictions: {test_prediction_dir}")
 
 

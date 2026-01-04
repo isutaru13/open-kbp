@@ -9,51 +9,10 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-import pandas as pd
 from tqdm import tqdm
 
 from .constants import FULL_ROI_LIST, PATIENT_SHAPE, ROIS
-
-
-def load_sparse_file(file_path: Path) -> Dict[str, Optional[np.ndarray]]:
-    """
-    Load a sparse CSV file and return indices and data.
-
-    Args:
-        file_path: Path to the CSV file
-
-    Returns:
-        Dictionary with 'indices' and 'data' keys
-    """
-    df = pd.read_csv(file_path, index_col=0)
-    if df.isnull().values.any():
-        return {"indices": np.array(df.index).squeeze(), "data": None}
-    else:
-        return {"indices": df.index.values, "data": df["data"].values}
-
-
-def sparse_to_dense(
-    sparse_data: Dict[str, Optional[np.ndarray]],
-    shape: Tuple[int, ...],
-    default_value: float = 0.0,
-) -> np.ndarray:
-    """
-    Convert sparse representation to dense array.
-
-    Args:
-        sparse_data: Dictionary with 'indices' and 'data' keys
-        shape: Target shape for the dense array
-        default_value: Value to fill non-indexed positions
-
-    Returns:
-        Dense numpy array of the specified shape
-    """
-    dense = np.full(np.prod(shape), default_value, dtype=np.float32)
-    if sparse_data["data"] is not None:
-        np.put(dense, sparse_data["indices"], sparse_data["data"])
-    else:
-        np.put(dense, sparse_data["indices"], 1.0)
-    return dense.reshape(shape)
+from .data_utils import load_sparse_file, sparse_to_dense
 
 
 def compute_dose_score(

@@ -17,40 +17,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from .constants import NUM_INPUT_CHANNELS
-
-
-class MaskedMAELoss(torch.nn.Module):
-    """Masked Mean Absolute Error Loss.
-
-    Computes MAE only in regions where dose deposition is possible,
-    as defined by the possible_dose_mask.
-    """
-
-    def __init__(self):
-        super().__init__()
-
-    def forward(
-        self, pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        Compute masked MAE loss.
-
-        Args:
-            pred: Predicted dose (B, 1, H, W, D)
-            target: Target dose (B, 1, H, W, D)
-            mask: Possible dose mask (B, 1, H, W, D)
-
-        Returns:
-            Scalar loss value
-        """
-        # Apply mask
-        masked_pred = pred * mask
-        masked_target = target * mask
-
-        # Compute MAE only on masked regions
-        abs_diff = torch.abs(masked_pred - masked_target)
-        loss = abs_diff.sum() / (mask.sum() + 1e-8)
-        return loss
+from .losses import MaskedMAELoss
 
 
 class DosePredictionModel:
@@ -88,6 +55,7 @@ class DosePredictionModel:
             device: Device to use ('cuda', 'cpu', or None for auto)
             learning_rate: Learning rate for optimizer
             num_filters: Initial number of filters in U-Net
+            lr_patience: Epochs to wait before reducing LR on plateau
         """
         self.model_name = model_name
         self.results_dir = results_dir / model_name
@@ -307,7 +275,7 @@ class DosePredictionModel:
             self.current_epoch = epoch
             print(f"\n{'=' * 50}")
             print(f"Epoch {epoch + 1}/{num_epochs}")
-            print(f"{'=' * 50}")
+            print("=" * 50)
 
             # Train
             train_loss = self.train_epoch(train_loader)

@@ -6,70 +6,14 @@ in a format suitable for training deep learning models.
 """
 
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import numpy as np
-import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-# Constants
-PATIENT_SHAPE = (128, 128, 128)
-ROIS = {
-    "oars": [
-        "Brainstem",
-        "SpinalCord",
-        "RightParotid",
-        "LeftParotid",
-        "Esophagus",
-        "Larynx",
-        "Mandible",
-    ],
-    "targets": ["PTV56", "PTV63", "PTV70"],
-}
-FULL_ROI_LIST = ROIS["oars"] + ROIS["targets"]
-NUM_ROIS = len(FULL_ROI_LIST)
-
-
-def load_sparse_file(file_path: Path) -> Dict[str, np.ndarray]:
-    """Load a sparse CSV file and return indices and data.
-
-    Args:
-        file_path: Path to the CSV file
-
-    Returns:
-        Dictionary with 'indices' and 'data' keys
-    """
-    df = pd.read_csv(file_path, index_col=0)
-    if df.isnull().values.any():
-        # Data is a mask (index only)
-        return {"indices": np.array(df.index).squeeze(), "data": None}
-    else:
-        # Data is sparse (index + values)
-        return {"indices": df.index.values, "data": df["data"].values}
-
-
-def sparse_to_dense(
-    sparse_data: Dict[str, np.ndarray],
-    shape: Tuple[int, ...],
-    default_value: float = 0.0,
-) -> np.ndarray:
-    """Convert sparse representation to dense array.
-
-    Args:
-        sparse_data: Dictionary with 'indices' and 'data' keys
-        shape: Target shape for the dense array
-        default_value: Value to fill non-sparse locations
-
-    Returns:
-        Dense numpy array of the specified shape
-    """
-    dense = np.full(np.prod(shape), default_value, dtype=np.float32)
-    if sparse_data["data"] is not None:
-        np.put(dense, sparse_data["indices"], sparse_data["data"])
-    else:
-        np.put(dense, sparse_data["indices"], 1.0)
-    return dense.reshape(shape)
+from .constants import FULL_ROI_LIST, NUM_ROIS, PATIENT_SHAPE
+from .data_utils import load_sparse_file, sparse_to_dense
 
 
 def get_patient_dirs(data_dir: Path) -> List[Path]:
