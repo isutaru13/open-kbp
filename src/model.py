@@ -77,6 +77,7 @@ class DosePredictionModel:
         device: Optional[str] = None,
         learning_rate: float = 1e-4,
         num_filters: int = 32,
+        lr_patience: int = 5,
     ):
         """
         Initialize the dose prediction model.
@@ -120,9 +121,17 @@ class DosePredictionModel:
 
         # Loss and optimizer
         self.criterion = MaskedMAELoss()
+        self.learning_rate = learning_rate
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
+
+        # Learning rate scheduler - reduce on plateau with faster response
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, mode="min", factor=0.5, patience=10
+            self.optimizer,
+            mode="min",
+            factor=0.5,  # Halve LR when plateau
+            patience=lr_patience,  # Wait N epochs before reducing
+            min_lr=1e-7,  # Don't go below this
+            threshold=0.01,  # Minimum improvement to count as progress
         )
 
         # Training history
@@ -311,6 +320,9 @@ class DosePredictionModel:
             # Update learning rate scheduler
             self.scheduler.step(val_loss)
 
+            # Get current learning rate
+            current_lr = self.optimizer.param_groups[0]["lr"]
+
             # Record epoch time
             epoch_time = time.time() - epoch_start_time
             self.epoch_times.append(epoch_time)
@@ -325,6 +337,7 @@ class DosePredictionModel:
             print(
                 f"Epoch {epoch + 1}: Train Loss = {train_loss:.4f}, "
                 f"Val Loss = {val_loss:.4f}, "
+                f"LR = {current_lr:.2e}, "
                 f"Time = {epoch_time:.1f}s, "
                 f"ETA = {eta_hr}h {eta_min}m {eta_sec}s"
             )

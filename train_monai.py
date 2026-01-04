@@ -94,6 +94,12 @@ def parse_args() -> argparse.Namespace:
         help="Device to use (cuda/cpu, default: auto)",
     )
     parser.add_argument(
+        "--lr-patience",
+        type=int,
+        default=5,
+        help="Epochs to wait before reducing LR on plateau (default: 5)",
+    )
+    parser.add_argument(
         "--data-fraction",
         type=float,
         default=1.0,
@@ -130,6 +136,7 @@ def main():
         "num_epochs": args.epochs,
         "batch_size": args.batch_size,
         "learning_rate": args.lr,
+        "lr_patience": args.lr_patience,
         "num_filters": args.filters,
         "save_frequency": args.save_freq,
         "num_workers": args.num_workers,
@@ -150,6 +157,7 @@ def main():
     print(f"Num workers: {args.num_workers}")
     print(f"Data fraction: {args.data_fraction * 100:.0f}%")
     print(f"Test split: {args.test_split * 100:.0f}%")
+    print(f"LR patience: {args.lr_patience}")
     print(f"Resume: {not args.no_resume}")
 
     # Paths
@@ -218,6 +226,7 @@ def main():
         device=args.device,
         learning_rate=args.lr,
         num_filters=args.filters,
+        lr_patience=args.lr_patience,
     )
 
     # Print model summary
