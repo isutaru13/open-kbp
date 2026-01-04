@@ -100,6 +100,12 @@ def parse_args() -> argparse.Namespace:
         help="Fraction of training data to use (0.0-1.0, default: 1.0)",
     )
     parser.add_argument(
+        "--test-split",
+        type=float,
+        default=0.1,
+        help="Fraction of training data to hold out for testing (default: 0.1)",
+    )
+    parser.add_argument(
         "--skip-eval",
         action="store_true",
         help="Skip evaluation after training",
@@ -128,6 +134,7 @@ def main():
         "save_frequency": args.save_freq,
         "num_workers": args.num_workers,
         "data_fraction": args.data_fraction,
+        "test_split": args.test_split,
     }
 
     print("=" * 60)
@@ -142,6 +149,7 @@ def main():
     print(f"Save frequency: {args.save_freq}")
     print(f"Num workers: {args.num_workers}")
     print(f"Data fraction: {args.data_fraction * 100:.0f}%")
+    print(f"Test split: {args.test_split * 100:.0f}%")
     print(f"Resume: {not args.no_resume}")
 
     # Paths
@@ -163,9 +171,17 @@ def main():
         val_patients = val_patients[:num_val]
         print(f"\n[Using {args.data_fraction * 100:.0f}% of data for quick testing]")
 
+    # Hold out test set from training data
+    test_patients = []
+    if args.test_split > 0:
+        num_test = max(1, int(len(train_patients) * args.test_split))
+        test_patients = train_patients[-num_test:]  # Take from end
+        train_patients = train_patients[:-num_test]  # Keep the rest for training
+
     print(f"\nDataset sizes:")
     print(f"  Training: {len(train_patients)} patients")
     print(f"  Validation: {len(val_patients)} patients")
+    print(f"  Test (held out): {len(test_patients)} patients")
 
     # Create datasets
     train_dataset = OpenKBPDataset(
@@ -290,6 +306,46 @@ def main():
         model_summary=model_summary,
     )
 
+    # Run inference on held-out test set
+    test_results = {}
+    if test_patients and not args.skip_eval:
+        print("\n" + "=" * 50)
+        print("Running inference on held-out test set...")
+        print("=" * 50)
+
+        test_prediction_dir = model.results_dir / "test-predictions"
+        test_pred_dataset = OpenKBPDataset(
+            test_patients,
+            transform=get_inference_transforms(),
+            include_dose=False,
+        )
+        test_pred_loader = DataLoader(
+            test_pred_dataset,
+            batch_size=1,
+            shuffle=False,
+            num_workers=args.num_workers,
+        )
+        model.predict(test_pred_loader, test_prediction_dir)
+
+        # Evaluate on test set
+        print("\nEvaluating on test set...")
+        test_patient_ids = [p.stem for p in test_patients]
+        test_results = evaluate_predictions(
+            pred_dir=test_prediction_dir,
+            ref_dir=train_dir,  # Test patients came from train dir
+            patient_ids=test_patient_ids,
+        )
+        print("\nTest Set Results:")
+        print_evaluation_results(test_results)
+
+        # Export test results
+        export_evaluation_results(
+            results=test_results,
+            output_path=exports_dir / "test_results.json",
+            model_name=run_name,
+            config=config,
+        )
+
     print("\n" + "=" * 60)
     print("Training complete!")
     print("=" * 60)
@@ -298,7 +354,9 @@ def main():
     print(f"  - Training history: {model.results_dir / 'training_history.png'}")
     print(f"  - Exports: {exports_dir}")
     if not args.skip_eval:
-        print(f"  - Predictions: {prediction_dir}")
+        print(f"  - Validation predictions: {prediction_dir}")
+    if test_patients and not args.skip_eval:
+        print(f"  - Test predictions: {test_prediction_dir}")
 
 
 if __name__ == "__main__":
