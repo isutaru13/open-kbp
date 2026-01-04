@@ -41,7 +41,13 @@ from .losses import (
     get_loss_function,
 )
 from .model import DosePredictionModel
-from .transforms import get_inference_transforms, get_transforms
+from .transforms import (
+    get_full_augment_transforms,
+    get_inference_transforms,
+    get_intensity_augment_transforms,
+    get_no_augment_transforms,
+    get_transforms,
+)
 from .visualization import (
     create_visualization_report,
     plot_ct_with_dose_overlay,
@@ -66,6 +72,9 @@ __all__ = [
     # Transforms
     "get_transforms",
     "get_inference_transforms",
+    "get_no_augment_transforms",
+    "get_intensity_augment_transforms",
+    "get_full_augment_transforms",
     # Losses
     "MaskedMAELoss",
     "MaskedMSELoss",

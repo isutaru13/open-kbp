@@ -149,6 +149,16 @@ def parse_args() -> argparse.Namespace:
         help="Gradient clipping norm (0 to disable)",
     )
 
+    # Augmentation settings
+    aug_group = parser.add_argument_group("Augmentation Settings")
+    aug_group.add_argument(
+        "--augment-type",
+        type=str,
+        default="intensity",
+        choices=["none", "intensity", "geometric", "full"],
+        help="Augmentation strategy: none (safest), intensity (recommended), geometric (may hurt!), full",
+    )
+
     # Data settings
     data_group = parser.add_argument_group("Data Settings")
     data_group.add_argument(
@@ -251,6 +261,7 @@ def main():
         "use_compile": args.compile,
         "grad_clip_norm": grad_clip,
         "effective_batch_size": args.batch_size * args.grad_accum,
+        "augment_type": args.augment_type,
     }
 
     print("=" * 70)
@@ -276,6 +287,7 @@ def main():
     print(f"  Gradient Checkpointing: {args.grad_checkpoint}")
     print(f"  torch.compile: {args.compile}")
     print(f"  Gradient clipping: {grad_clip}")
+    print(f"  Augmentation: {args.augment_type}")
 
     print("\n📊 Data Settings:")
     print(f"  Data fraction: {args.data_fraction * 100:.0f}%")
@@ -319,9 +331,14 @@ def main():
     print(f"  Test (held out): {len(test_patients)} patients")
 
     # Create datasets
+    print(f"\n🔄 Augmentation Strategy: {args.augment_type}")
+    if args.augment_type == "geometric" or args.augment_type == "full":
+        print("  ⚠️  WARNING: Geometric augmentation may hurt dose prediction!")
+        print("  Consider using --augment-type intensity instead.")
+
     train_dataset = OpenKBPDataset(
         train_patients,
-        transform=get_transforms(training=True),
+        transform=get_transforms(training=True, augment_type=args.augment_type),
         include_dose=True,
     )
     val_dataset = OpenKBPDataset(
@@ -549,6 +566,10 @@ python train_monai.py --epochs 600 --batch-size 4 --filters 48 --lr 2e-4 \\
 # Option 3: Larger model (fewer epochs)
 python train_monai.py --epochs 300 --batch-size 2 --filters 96 --lr 3e-4 \\
     --scheduler onecycle --grad-accum 8 --warmup-epochs 15 --save-freq 50
+
+# Option 4: No augmentation (test if augmentation is hurting results)
+python train_monai.py --epochs 400 --batch-size 4 --filters 64 --lr 3e-4 \\
+    --scheduler onecycle --grad-accum 4 --warmup-epochs 20 --augment-type none
 """)
 
 

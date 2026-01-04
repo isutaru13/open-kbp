@@ -235,6 +235,59 @@ python train_monai.py \
     --data-fraction 0.5
 ```
 
+#### Option 5: No Augmentation (Recommended First Try)
+
+Test without geometric augmentation - may significantly improve results.
+
+```bash
+python train_monai.py \
+    --epochs 400 \
+    --batch-size 4 \
+    --filters 64 \
+    --lr 3e-4 \
+    --scheduler onecycle \
+    --grad-accum 4 \
+    --warmup-epochs 20 \
+    --augment-type none
+```
+
+### Augmentation Strategy
+
+> ⚠️ **Important**: Geometric augmentation (flip/rotate) may **hurt** dose prediction results!
+
+#### Why Geometric Augmentation Can Be Harmful
+
+Unlike segmentation tasks, dose prediction has a **hidden dependency on beam geometry**:
+
+```
+Input to model:              What actually determines dose:
+┌─────────────────┐         ┌─────────────────────────────┐
+│ CT scan         │         │ CT scan                     │
+│ + ROI masks     │   →     │ + ROI masks                 │
+└─────────────────┘         │ + BEAM ANGLES (not in input)│
+                            └─────────────────────────────┘
+```
+
+When you flip or rotate the anatomy:
+- The dose pattern should change (beams enter from different angles)
+- But we flip/rotate the dose too, creating **inconsistent training pairs**
+- The model learns a "blurry average" instead of precise mappings
+
+#### Augmentation Types
+
+| Type | Transforms | Safe for Dose? | Use Case |
+|------|------------|----------------|----------|
+| `none` | No augmentation | ✅ Safest | Try this first |
+| `intensity` | Noise, contrast, shift | ✅ Safe | Recommended default |
+| `geometric` | Flip, rotate | ⚠️ May hurt | Not recommended |
+| `full` | All of the above | ⚠️ May hurt | Use with caution |
+
+#### Recommendation
+
+1. **Start with `--augment-type none`** to establish baseline
+2. **Try `--augment-type intensity`** (adds noise/contrast only)
+3. **Compare results** - if geometric hurts, avoid it
+
 ### Optimization Flags Explained
 
 | Flag | What It Does | When to Use |
@@ -248,6 +301,7 @@ python train_monai.py \
 | `--warmup-epochs N` | Don't save "best" model for N epochs | Avoid early anomalies |
 | `--grad-clip N` | Clip gradients to norm N | Training stability |
 | `--compile` | Use torch.compile | PyTorch 2.0+, experimental |
+| `--augment-type` | Augmentation strategy | See section above |
 
 ### Effective Batch Size
 
