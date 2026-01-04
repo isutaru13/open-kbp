@@ -5,6 +5,7 @@ This module provides the DosePredictionModel class for training
 and inference using MONAI's 3D U-Net architecture.
 """
 
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -127,6 +128,7 @@ class DosePredictionModel:
         # Training history
         self.train_losses: list[float] = []
         self.val_losses: list[float] = []
+        self.epoch_times: list[float] = []
         self.current_epoch = 0
 
     def save_checkpoint(self, epoch: int, val_loss: float) -> None:
@@ -144,6 +146,7 @@ class DosePredictionModel:
             "scheduler_state_dict": self.scheduler.state_dict(),
             "train_losses": self.train_losses,
             "val_losses": self.val_losses,
+            "epoch_times": self.epoch_times,
             "val_loss": val_loss,
         }
         torch.save(checkpoint, self.model_dir / f"epoch_{epoch}.pt")
@@ -174,6 +177,7 @@ class DosePredictionModel:
             self.scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
             self.train_losses = checkpoint["train_losses"]
             self.val_losses = checkpoint["val_losses"]
+            self.epoch_times = checkpoint.get("epoch_times", [])
             self.current_epoch = checkpoint["epoch"]
             print(f"Loaded checkpoint from epoch {epoch}")
         else:
@@ -290,6 +294,7 @@ class DosePredictionModel:
         start_epoch = self.current_epoch
 
         for epoch in range(start_epoch, num_epochs):
+            epoch_start_time = time.time()
             self.current_epoch = epoch
             print(f"\n{'=' * 50}")
             print(f"Epoch {epoch + 1}/{num_epochs}")
@@ -306,9 +311,22 @@ class DosePredictionModel:
             # Update learning rate scheduler
             self.scheduler.step(val_loss)
 
+            # Record epoch time
+            epoch_time = time.time() - epoch_start_time
+            self.epoch_times.append(epoch_time)
+
+            # Calculate ETA
+            avg_epoch_time = sum(self.epoch_times) / len(self.epoch_times)
+            remaining_epochs = num_epochs - (epoch + 1)
+            eta_seconds = avg_epoch_time * remaining_epochs
+            eta_min, eta_sec = divmod(int(eta_seconds), 60)
+            eta_hr, eta_min = divmod(eta_min, 60)
+
             print(
                 f"Epoch {epoch + 1}: Train Loss = {train_loss:.4f}, "
-                f"Val Loss = {val_loss:.4f}"
+                f"Val Loss = {val_loss:.4f}, "
+                f"Time = {epoch_time:.1f}s, "
+                f"ETA = {eta_hr}h {eta_min}m {eta_sec}s"
             )
 
             # Save checkpoint
@@ -389,4 +407,23 @@ class DosePredictionModel:
             "total_params": total_params,
             "trainable_params": trainable_params,
             "device": str(self.device),
+        }
+
+    def get_timing_summary(self) -> dict:
+        """
+        Get timing summary information.
+
+        Returns:
+            Dictionary with timing statistics
+        """
+        if not self.epoch_times:
+            return {}
+
+        return {
+            "total_time_seconds": sum(self.epoch_times),
+            "total_time_minutes": sum(self.epoch_times) / 60,
+            "avg_epoch_time": sum(self.epoch_times) / len(self.epoch_times),
+            "min_epoch_time": min(self.epoch_times),
+            "max_epoch_time": max(self.epoch_times),
+            "epoch_times": self.epoch_times,
         }

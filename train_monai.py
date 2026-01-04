@@ -296,6 +296,7 @@ def main():
         )
 
     # Export complete training summary
+    timing_summary = model.get_timing_summary()
     export_training_summary(
         model_name=run_name,
         config=config,
@@ -303,8 +304,16 @@ def main():
         val_losses=model.val_losses,
         evaluation_results=evaluation_results,
         output_path=exports_dir / "training_summary.json",
-        model_summary=model_summary,
+        model_summary={**model_summary, "timing": timing_summary},
     )
+
+    # Print timing summary
+    if timing_summary:
+        print(f"\nTiming Summary:")
+        print(
+            f"  Total training time: {timing_summary['total_time_minutes']:.1f} minutes"
+        )
+        print(f"  Average epoch time: {timing_summary['avg_epoch_time']:.1f} seconds")
 
     # Run inference on held-out test set
     test_results = {}
