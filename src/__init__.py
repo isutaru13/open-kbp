@@ -41,6 +41,8 @@ from .losses import (
     get_loss_function,
 )
 from .model import DosePredictionModel
+from .hd_unet import HDUNet, HDUNetLite, get_hd_unet
+from .hd_unet_model import HDUNetDosePredictionModel
 from .transforms import (
     get_full_augment_transforms,
     get_inference_transforms,
@@ -83,6 +85,11 @@ __all__ = [
     "get_loss_function",
     # Model
     "DosePredictionModel",
+    # HD U-Net
+    "HDUNet",
+    "HDUNetLite",
+    "get_hd_unet",
+    "HDUNetDosePredictionModel",
     # Evaluation
     "compute_dose_score",
     "compute_dvh_score",

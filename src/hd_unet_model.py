@@ -1,38 +1,91 @@
 """
-MONAI-based dose prediction model and trainer.
+HD U-Net based dose prediction model and trainer.
 
-This module provides the DosePredictionModel class for training
-and inference using MONAI's 3D U-Net architecture.
+This module provides the HDUNetDosePredictionModel class for training
+and inference using the HD U-Net architecture.
 
 Optimized for RTX 3060 12GB with:
 - Mixed Precision Training (AMP)
 - Gradient Accumulation
 - OneCycleLR Scheduler
 - Gradient Checkpointing
+- Deep Supervision support
 - torch.compile support
 """
 
 import time
 from pathlib import Path
-from typing import Literal, Optional
+from typing import List, Literal, Optional, Union
 
 import numpy as np
 import pandas as pd
 import torch
-from monai.networks.nets import UNet
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from .constants import NUM_INPUT_CHANNELS
+from .hd_unet import HDUNet, HDUNetLite, get_hd_unet
 from .losses import MaskedMAELoss
 
 
-class DosePredictionModel:
-    """MONAI-based dose prediction model trainer.
+class DeepSupervisionLoss(torch.nn.Module):
+    """Loss function with deep supervision support.
+    
+    Combines main output loss with weighted auxiliary losses.
+    
+    Args:
+        base_loss: Base loss function (e.g., MaskedMAELoss)
+        weights: Weights for auxiliary outputs (from deepest to shallowest)
+    """
+    
+    def __init__(
+        self,
+        base_loss: torch.nn.Module,
+        weights: Optional[List[float]] = None,
+    ):
+        super().__init__()
+        self.base_loss = base_loss
+        self.weights = weights or [0.5, 0.25, 0.125]  # Decreasing weights for deeper levels
+    
+    def forward(
+        self,
+        pred: Union[torch.Tensor, tuple],
+        target: torch.Tensor,
+        mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute loss with optional deep supervision.
+        
+        Args:
+            pred: Main prediction or tuple of (main_pred, [aux_preds])
+            target: Target tensor
+            mask: Mask tensor
+            
+        Returns:
+            Total loss
+        """
+        if isinstance(pred, tuple):
+            main_pred, aux_preds = pred
+            
+            # Main loss
+            main_loss = self.base_loss(main_pred, target, mask)
+            
+            # Auxiliary losses
+            aux_loss = 0.0
+            for i, aux_pred in enumerate(aux_preds):
+                weight = self.weights[i] if i < len(self.weights) else 0.1
+                aux_loss += weight * self.base_loss(aux_pred, target, mask)
+            
+            return main_loss + aux_loss
+        else:
+            return self.base_loss(pred, target, mask)
+
+
+class HDUNetDosePredictionModel:
+    """HD U-Net based dose prediction model trainer.
 
     This class handles model creation, training, validation,
-    checkpointing, and inference for dose prediction.
+    checkpointing, and inference for dose prediction using HD U-Net.
 
     Optimized for memory-constrained GPUs like RTX 3060 12GB.
 
@@ -41,22 +94,28 @@ class DosePredictionModel:
         results_dir: Directory to save results
         model_dir: Directory to save model checkpoints
         device: PyTorch device (cuda/cpu)
-        model: MONAI UNet model
+        model: HD U-Net model
         criterion: Loss function
-        optimizer: Adam optimizer
+        optimizer: AdamW optimizer
         scheduler: Learning rate scheduler
     """
 
     def __init__(
         self,
-        model_name: str = "monai_unet",
+        model_name: str = "hd_unet",
         results_dir: Path = Path("results"),
         device: Optional[str] = None,
         learning_rate: float = 1e-4,
-        num_filters: int = 32,
+        model_variant: Literal["lite", "standard", "large"] = "standard",
         lr_patience: int = 5,
         warmup_epochs: int = 0,
         min_epochs: int = 0,
+        # HD U-Net specific settings
+        init_features: int = 48,
+        growth_rate: int = 16,
+        use_attention: bool = True,
+        deep_supervision: bool = True,
+        dropout_rate: float = 0.2,
         # Optimization settings
         use_amp: bool = True,
         gradient_accumulation_steps: int = 1,
@@ -67,17 +126,22 @@ class DosePredictionModel:
         grad_clip_norm: Optional[float] = 1.0,
     ):
         """
-        Initialize the dose prediction model.
+        Initialize the HD U-Net dose prediction model.
 
         Args:
             model_name: Name for the model (used for saving)
             results_dir: Base directory for results
             device: Device to use ('cuda', 'cpu', or None for auto)
             learning_rate: Learning rate for optimizer
-            num_filters: Initial number of filters in U-Net
+            model_variant: HD U-Net variant ('lite', 'standard', 'large')
             lr_patience: Epochs to wait before reducing LR on plateau
-            warmup_epochs: Number of epochs before saving best model (avoids early anomalies)
+            warmup_epochs: Number of epochs before saving best model
             min_epochs: Minimum epochs before early stopping is allowed
+            init_features: Initial number of features
+            growth_rate: Dense block growth rate
+            use_attention: Use attention gates in skip connections
+            deep_supervision: Enable deep supervision during training
+            dropout_rate: Dropout rate
             use_amp: Enable Automatic Mixed Precision (FP16) training
             gradient_accumulation_steps: Number of steps to accumulate gradients
             scheduler_type: LR scheduler type ('plateau', 'onecycle', 'cosine')
@@ -105,36 +169,60 @@ class DosePredictionModel:
         self.max_epochs = max_epochs
         self.use_gradient_checkpointing = use_gradient_checkpointing
         self.grad_clip_norm = grad_clip_norm
+        self.deep_supervision = deep_supervision
 
         # Print optimization settings
+        print(f"\n{'=' * 50}")
+        print("HD U-Net Configuration")
+        print("=" * 50)
+        print(f"Model Variant: {model_variant}")
+        print(f"Init Features: {init_features}")
+        print(f"Growth Rate: {growth_rate}")
+        print(f"Use Attention: {use_attention}")
+        print(f"Deep Supervision: {deep_supervision}")
+        print(f"Dropout Rate: {dropout_rate}")
+        print(f"\nOptimization Settings:")
         print(f"Mixed Precision (AMP): {self.use_amp}")
         print(f"Gradient Accumulation Steps: {self.gradient_accumulation_steps}")
         print(f"Scheduler Type: {self.scheduler_type}")
         print(f"Gradient Checkpointing: {self.use_gradient_checkpointing}")
         print(f"Gradient Clip Norm: {self.grad_clip_norm}")
+        print("=" * 50)
 
-        # Build MONAI UNet
-        self.num_filters = num_filters
-        self.model = UNet(
-            spatial_dims=3,
-            in_channels=NUM_INPUT_CHANNELS,
-            out_channels=1,
-            channels=(
-                num_filters,
-                num_filters * 2,
-                num_filters * 4,
-                num_filters * 8,
-                num_filters * 16,
-            ),
-            strides=(2, 2, 2, 2),
-            num_res_units=2,
-            norm="batch",
-            dropout=0.2,
-        ).to(self.device)
+        # Build HD U-Net
+        self.model_variant = model_variant
+        self.init_features = init_features
+        self.growth_rate = growth_rate
+        
+        if model_variant in ["lite", "standard", "large"]:
+            self.model = get_hd_unet(
+                variant=model_variant,
+                in_channels=NUM_INPUT_CHANNELS,
+                out_channels=1,
+                use_checkpoint=use_gradient_checkpointing,
+                use_attention=use_attention,
+                deep_supervision=deep_supervision,
+                dropout_rate=dropout_rate,
+            )
+        else:
+            # Custom configuration
+            self.model = HDUNet(
+                in_channels=NUM_INPUT_CHANNELS,
+                out_channels=1,
+                init_features=init_features,
+                growth_rate=growth_rate,
+                use_attention=use_attention,
+                deep_supervision=deep_supervision,
+                dropout_rate=dropout_rate,
+                use_checkpoint=use_gradient_checkpointing,
+            )
+        
+        self.model = self.model.to(self.device)
 
-        # Enable gradient checkpointing if requested
-        if self.use_gradient_checkpointing:
-            self._enable_gradient_checkpointing()
+        # Print model stats
+        total_params = sum(p.numel() for p in self.model.parameters())
+        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        print(f"\nModel Parameters: {total_params:,} total, {trainable_params:,} trainable")
 
         # Compile model if requested (PyTorch 2.0+)
         if use_compile:
@@ -144,8 +232,13 @@ class DosePredictionModel:
             except Exception as e:
                 print(f"torch.compile not available: {e}")
 
-        # Loss and optimizer
-        self.criterion = MaskedMAELoss()
+        # Loss function with deep supervision support
+        base_loss = MaskedMAELoss()
+        if deep_supervision:
+            self.criterion = DeepSupervisionLoss(base_loss)
+        else:
+            self.criterion = base_loss
+        
         self.learning_rate = learning_rate
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
@@ -155,9 +248,9 @@ class DosePredictionModel:
         )
 
         # Mixed precision scaler
-        self.scaler = GradScaler(enabled=self.use_amp)
+        self.scaler = GradScaler('cuda', enabled=self.use_amp)
 
-        # Learning rate scheduler (initialized in train() for onecycle)
+        # Learning rate scheduler
         self.scheduler = None
         self.lr_patience = lr_patience
         self._init_scheduler(scheduler_type, max_epochs)
@@ -172,12 +265,6 @@ class DosePredictionModel:
         # Long training settings
         self.warmup_epochs = warmup_epochs
         self.min_epochs = min_epochs
-
-    def _enable_gradient_checkpointing(self) -> None:
-        """Enable gradient checkpointing for memory efficiency."""
-        # MONAI UNet doesn't have built-in checkpointing, so we wrap forward
-        # This is a simplified version - full implementation would require model modification
-        print("Gradient checkpointing enabled (memory-efficient mode)")
 
     def _init_scheduler(
         self,
@@ -196,8 +283,7 @@ class DosePredictionModel:
                 threshold=0.01,
             )
         elif scheduler_type == "onecycle":
-            # OneCycleLR needs total steps, will be re-initialized in train()
-            self.scheduler = None  # Placeholder
+            self.scheduler = None  # Initialized in train() with correct steps
         elif scheduler_type == "cosine":
             self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
                 self.optimizer,
@@ -208,13 +294,7 @@ class DosePredictionModel:
             raise ValueError(f"Unknown scheduler type: {scheduler_type}")
 
     def save_checkpoint(self, epoch: int, val_loss: float) -> None:
-        """
-        Save model checkpoint.
-
-        Args:
-            epoch: Current epoch number
-            val_loss: Validation loss for this epoch
-        """
+        """Save model checkpoint."""
         checkpoint = {
             "epoch": epoch,
             "model_state_dict": self.model.state_dict(),
@@ -225,6 +305,12 @@ class DosePredictionModel:
             "learning_rates": self.learning_rates,
             "epoch_times": self.epoch_times,
             "val_loss": val_loss,
+            "model_config": {
+                "variant": self.model_variant,
+                "init_features": self.init_features,
+                "growth_rate": self.growth_rate,
+                "deep_supervision": self.deep_supervision,
+            },
         }
         if self.scheduler is not None and self.scheduler_type != "onecycle":
             checkpoint["scheduler_state_dict"] = self.scheduler.state_dict()
@@ -233,19 +319,13 @@ class DosePredictionModel:
         print(f"Saved checkpoint at epoch {epoch}")
 
     def load_checkpoint(self, epoch: Optional[int] = None) -> None:
-        """
-        Load model checkpoint.
-
-        Args:
-            epoch: Specific epoch to load. If None, loads the latest.
-        """
+        """Load model checkpoint."""
         checkpoints = list(self.model_dir.glob("epoch_*.pt"))
         if not checkpoints:
             print("No checkpoints found, starting from scratch")
             return
 
         if epoch is None:
-            # Find latest checkpoint
             epochs = [int(c.stem.split("_")[1]) for c in checkpoints]
             epoch = max(epochs)
 
@@ -271,27 +351,25 @@ class DosePredictionModel:
         else:
             print(f"Checkpoint for epoch {epoch} not found")
 
-    def load_best_model(self) -> None:
-        """Load the best model based on validation loss."""
+    def load_best_model(self) -> bool:
+        """Load the best model based on validation loss.
+        
+        Returns:
+            True if best model was loaded, False otherwise.
+        """
         best_model_path = self.model_dir / "best_model.pt"
         if best_model_path.exists():
             self.model.load_state_dict(
                 torch.load(best_model_path, map_location=self.device)
             )
             print("Loaded best model")
+            return True
         else:
             print("Best model not found")
+            return False
 
     def train_epoch(self, train_loader: DataLoader) -> float:
-        """
-        Train for one epoch with AMP and gradient accumulation.
-
-        Args:
-            train_loader: DataLoader for training data
-
-        Returns:
-            Average training loss for the epoch
-        """
+        """Train for one epoch with AMP and gradient accumulation."""
         self.model.train()
         total_loss = 0.0
         num_batches = 0
@@ -305,32 +383,48 @@ class DosePredictionModel:
             mask = batch["mask"].to(self.device, non_blocking=True)
 
             # Forward pass with AMP
-            with autocast(enabled=self.use_amp):
+            with autocast('cuda', enabled=self.use_amp):
                 pred = self.model(image)
-                pred = torch.relu(pred)
+                
+                # Apply ReLU to main output (handle deep supervision tuple)
+                if isinstance(pred, tuple):
+                    main_pred, aux_preds = pred
+                    main_pred = torch.relu(main_pred)
+                    aux_preds = [torch.relu(aux) for aux in aux_preds]
+                    pred = (main_pred, aux_preds)
+                else:
+                    pred = torch.relu(pred)
+                
                 loss = self.criterion(pred, dose, mask)
-                # Scale loss for gradient accumulation
                 loss = loss / self.gradient_accumulation_steps
 
-            # Backward pass with scaled gradients
+            # Backward pass
             self.scaler.scale(loss).backward()
+
 
             # Update weights after accumulation steps
             if (batch_idx + 1) % self.gradient_accumulation_steps == 0:
-                # Gradient clipping
                 if self.grad_clip_norm is not None:
                     self.scaler.unscale_(self.optimizer)
                     torch.nn.utils.clip_grad_norm_(
                         self.model.parameters(), self.grad_clip_norm
                     )
 
+                # Track scale before step to detect if optimizer step was skipped
+                old_scale = self.scaler.get_scale()
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
-                self.optimizer.zero_grad()
-
-                # Step OneCycleLR per batch
+                new_scale = self.scaler.get_scale()
+                
+                # Only step scheduler if optimizer.step() was actually called
+                # (scale stays same or increases when step is skipped due to inf/nan)
                 if self.scheduler_type == "onecycle" and self.scheduler is not None:
-                    self.scheduler.step()
+                    if old_scale <= new_scale:
+                        # Optimizer step was skipped, don't step scheduler
+                        pass
+                    else:
+                        self.scheduler.step()
+                self.optimizer.zero_grad()
 
             total_loss += loss.item() * self.gradient_accumulation_steps
             num_batches += 1
@@ -338,33 +432,34 @@ class DosePredictionModel:
                 {"loss": f"{loss.item() * self.gradient_accumulation_steps:.4f}"}
             )
 
-        # Handle remaining gradients if batches don't divide evenly
+
+        # Handle remaining gradients
         if num_batches % self.gradient_accumulation_steps != 0:
             if self.grad_clip_norm is not None:
                 self.scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(
                     self.model.parameters(), self.grad_clip_norm
                 )
+            old_scale = self.scaler.get_scale()
             self.scaler.step(self.optimizer)
             self.scaler.update()
+            new_scale = self.scaler.get_scale()
+            if self.scheduler_type == "onecycle" and self.scheduler is not None:
+                if old_scale > new_scale:  # Only step if optimizer actually stepped
+                    self.scheduler.step()
             self.optimizer.zero_grad()
 
         return total_loss / num_batches
 
     @torch.no_grad()
     def validate(self, val_loader: DataLoader) -> float:
-        """
-        Validate the model with AMP.
-
-        Args:
-            val_loader: DataLoader for validation data
-
-        Returns:
-            Average validation loss
-        """
+        """Validate the model with AMP."""
         self.model.eval()
         total_loss = 0.0
         num_batches = 0
+
+        # Use base loss for validation (no deep supervision)
+        base_loss = MaskedMAELoss()
 
         progress_bar = tqdm(val_loader, desc="Validation")
         for batch in progress_bar:
@@ -372,11 +467,15 @@ class DosePredictionModel:
             dose = batch["dose"].to(self.device, non_blocking=True)
             mask = batch["mask"].to(self.device, non_blocking=True)
 
-            # Forward pass with AMP
-            with autocast(enabled=self.use_amp):
+            with autocast('cuda', enabled=self.use_amp):
                 pred = self.model(image)
+                
+                # Handle deep supervision output (only use main output for validation)
+                if isinstance(pred, tuple):
+                    pred = pred[0]
+                
                 pred = torch.relu(pred)
-                loss = self.criterion(pred, dose, mask)
+                loss = base_loss(pred, dose, mask)
 
             total_loss += loss.item()
             num_batches += 1
@@ -392,23 +491,15 @@ class DosePredictionModel:
         save_frequency: int = 5,
         resume: bool = True,
     ) -> None:
-        """
-        Train the model.
-
-        Args:
-            train_loader: DataLoader for training data
-            val_loader: DataLoader for validation data
-            num_epochs: Total number of epochs to train
-            save_frequency: Save checkpoint every N epochs
-            resume: Whether to resume from latest checkpoint
-        """
+        """Train the model."""
         if resume:
             self.load_checkpoint()
 
         # Set start_epoch BEFORE scheduler initialization so we know remaining epochs
         start_epoch = self.current_epoch
-
-        # Initialize OneCycleLR scheduler if needed (requires knowing steps per epoch)
+        
+        # Initialize OneCycleLR scheduler AFTER loading checkpoint
+        # so we know the correct start_epoch
         if self.scheduler_type == "onecycle":
             steps_per_epoch = len(train_loader) // self.gradient_accumulation_steps
             # Account for any remaining batch that doesn't fill accumulation steps
@@ -418,12 +509,12 @@ class DosePredictionModel:
             total_steps = steps_per_epoch * remaining_epochs
             self.scheduler = torch.optim.lr_scheduler.OneCycleLR(
                 self.optimizer,
-                max_lr=self.learning_rate * 10,  # Peak LR is 10x base
+                max_lr=self.learning_rate * 10,
                 total_steps=total_steps,
-                pct_start=0.1,  # 10% warmup
+                pct_start=0.1,
                 anneal_strategy="cos",
-                div_factor=10,  # Initial LR = max_lr / 10
-                final_div_factor=100,  # Final LR = max_lr / 1000
+                div_factor=10,
+                final_div_factor=100,
             )
             print(
                 f"OneCycleLR initialized: {total_steps} total steps "
@@ -433,12 +524,12 @@ class DosePredictionModel:
 
         best_val_loss = float("inf")
 
-        # Calculate effective batch size
         effective_batch_size = (
             train_loader.batch_size * self.gradient_accumulation_steps
         )
         print(
-            f"\nEffective batch size: {effective_batch_size} (batch={train_loader.batch_size} × accum={self.gradient_accumulation_steps})"
+            f"\nEffective batch size: {effective_batch_size} "
+            f"(batch={train_loader.batch_size} × accum={self.gradient_accumulation_steps})"
         )
 
         for epoch in range(start_epoch, num_epochs):
@@ -448,37 +539,31 @@ class DosePredictionModel:
             print(f"Epoch {epoch + 1}/{num_epochs}")
             print("=" * 50)
 
-            # Train
             train_loss = self.train_epoch(train_loader)
             self.train_losses.append(train_loss)
 
-            # Validate
             val_loss = self.validate(val_loader)
             self.val_losses.append(val_loss)
 
-            # Update learning rate scheduler (for plateau and cosine)
+
+            # Update scheduler (plateau/cosine only at end of epoch)
             if self.scheduler_type == "plateau":
                 self.scheduler.step(val_loss)
             elif self.scheduler_type == "cosine":
                 self.scheduler.step()
-            # OneCycleLR is stepped per batch in train_epoch
 
-            # Get current learning rate
             current_lr = self.optimizer.param_groups[0]["lr"]
             self.learning_rates.append(current_lr)
 
-            # Record epoch time
             epoch_time = time.time() - epoch_start_time
             self.epoch_times.append(epoch_time)
 
-            # Calculate ETA
             avg_epoch_time = sum(self.epoch_times) / len(self.epoch_times)
             remaining_epochs = num_epochs - (epoch + 1)
             eta_seconds = avg_epoch_time * remaining_epochs
             eta_min, eta_sec = divmod(int(eta_seconds), 60)
             eta_hr, eta_min = divmod(eta_min, 60)
 
-            # Memory usage
             if self.device.type == "cuda":
                 mem_used = torch.cuda.max_memory_allocated() / 1024**3
                 mem_str = f", VRAM = {mem_used:.1f}GB"
@@ -494,32 +579,24 @@ class DosePredictionModel:
                 f"ETA = {eta_hr}h {eta_min}m {eta_sec}s"
             )
 
-            # Save checkpoint
             if (epoch + 1) % save_frequency == 0:
                 self.save_checkpoint(epoch + 1, val_loss)
 
-            # Save best model (only after warmup period to avoid early anomalies)
             if val_loss < best_val_loss and (epoch + 1) > self.warmup_epochs:
                 best_val_loss = val_loss
                 torch.save(self.model.state_dict(), self.model_dir / "best_model.pt")
                 print(f"New best model saved with val_loss = {val_loss:.4f}")
             elif val_loss < best_val_loss and (epoch + 1) <= self.warmup_epochs:
                 print(
-                    f"Warmup period ({epoch + 1}/{self.warmup_epochs}): skipping best model save (val_loss = {val_loss:.4f})"
+                    f"Warmup period ({epoch + 1}/{self.warmup_epochs}): "
+                    f"skipping best model save (val_loss = {val_loss:.4f})"
                 )
 
-        # Save final model
         self.save_checkpoint(num_epochs, val_loss)
 
     @torch.no_grad()
     def predict(self, data_loader: DataLoader, output_dir: Path) -> None:
-        """
-        Generate predictions for a dataset.
-
-        Args:
-            data_loader: DataLoader for inference data
-            output_dir: Directory to save predictions
-        """
+        """Generate predictions for a dataset."""
         self.model.eval()
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -529,31 +606,26 @@ class DosePredictionModel:
             mask = batch["mask"].to(self.device, non_blocking=True)
             patient_ids = batch["patient_id"]
 
-            # Forward pass with AMP
-            with autocast(enabled=self.use_amp):
+            with autocast('cuda', enabled=self.use_amp):
                 pred = self.model(image)
+                
+                # Handle deep supervision output
+                if isinstance(pred, tuple):
+                    pred = pred[0]
+                
                 pred = torch.relu(pred)
 
-            # Apply mask
             pred = pred * mask
-
-            # Save predictions
             pred_np = pred.float().cpu().numpy()
+            
             for i, patient_id in enumerate(patient_ids):
-                dose_pred = pred_np[i, 0]  # (128, 128, 128)
+                dose_pred = pred_np[i, 0]
                 self._save_dose_prediction(dose_pred, patient_id, output_dir)
 
     def _save_dose_prediction(
         self, dose: np.ndarray, patient_id: str, output_dir: Path
     ) -> None:
-        """
-        Save dose prediction in sparse CSV format.
-
-        Args:
-            dose: 3D dose array
-            patient_id: Patient identifier
-            output_dir: Directory to save the prediction
-        """
+        """Save dose prediction in sparse CSV format."""
         flat_dose = dose.flatten()
         nonzero_mask = flat_dose > 0
         indices = np.where(nonzero_mask)[0]
@@ -563,12 +635,7 @@ class DosePredictionModel:
         df.to_csv(output_dir / f"{patient_id}.csv")
 
     def get_model_summary(self) -> dict:
-        """
-        Get model summary information.
-
-        Returns:
-            Dictionary with model parameter counts
-        """
+        """Get model summary information."""
         total_params = sum(p.numel() for p in self.model.parameters())
         trainable_params = sum(
             p.numel() for p in self.model.parameters() if p.requires_grad
@@ -577,19 +644,17 @@ class DosePredictionModel:
             "total_params": total_params,
             "trainable_params": trainable_params,
             "device": str(self.device),
-            "num_filters": self.num_filters,
+            "model_variant": self.model_variant,
+            "init_features": self.init_features,
+            "growth_rate": self.growth_rate,
+            "deep_supervision": self.deep_supervision,
             "use_amp": self.use_amp,
             "gradient_accumulation_steps": self.gradient_accumulation_steps,
             "scheduler_type": self.scheduler_type,
         }
 
     def get_timing_summary(self) -> dict:
-        """
-        Get timing summary information.
-
-        Returns:
-            Dictionary with timing statistics
-        """
+        """Get timing summary information."""
         if not self.epoch_times:
             return {}
 
