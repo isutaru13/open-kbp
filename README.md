@@ -4,6 +4,10 @@
 
 A MONAI-based 3D U-Net implementation for predicting radiation dose distributions in head-and-neck cancer patients. This is a refactored and **optimized** version of the [OpenKBP Grand Challenge](https://aapm.onlinelibrary.wiley.com/doi/epdf/10.1002/mp.14845) codebase, using PyTorch and MONAI instead of TensorFlow/Keras.
 
+**Includes two model architectures:**
+- **MONAI 3D U-Net** - Standard residual U-Net
+- **HD U-Net (NEW)** - Hierarchical Dense U-Net with attention gates and deep supervision
+
 **Optimized for RTX 3060 12GB** with Mixed Precision, Gradient Accumulation, OneCycleLR, and more.
 
 ![](read-me-images/pipeline.png)
@@ -21,6 +25,7 @@ If you use this dataset or code, please cite the original paper:
 - [Project Structure](#project-structure)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
+- [HD U-Net Training](#hd-u-net-training)
 - [RTX 3060 Optimization Guide](#rtx-3060-optimization-guide)
 - [Command Line Reference](#command-line-reference)
 - [GPU Configuration](#gpu-configuration)
@@ -33,9 +38,17 @@ If you use this dataset or code, please cite the original paper:
 
 ### Core Features
 - **MONAI 3D U-Net**: Modern PyTorch-based architecture with residual units
+- **HD U-Net (NEW)**: Hierarchical Dense U-Net with attention gates and deep supervision
 - **Modular Design**: Clean separation of dataset, model, transforms, losses, and evaluation
 - **Comprehensive Evaluation**: Dose score (MAE) and DVH metrics
 - **Result Exports**: JSON summaries, CSV losses, and visualization plots
+
+### HD U-Net Features (NEW)
+- **Dense Blocks**: DenseNet-style feature reuse with bottleneck design
+- **Attention Gates**: Enhanced skip connections that focus on relevant features
+- **Deep Supervision**: Auxiliary losses for improved gradient flow
+- **Three Variants**: lite (~200K params), standard (~2M params), large (~8M params)
+- **Gradient Checkpointing**: Memory-efficient training for larger models
 
 ### Optimization Features (NEW)
 - **Mixed Precision (AMP)**: ~1.5-2× speedup with FP16 training
@@ -85,7 +98,9 @@ open-kbp/
 │   ├── evaluation.py             # Dose and DVH metric computation
 │   ├── export.py                 # JSON/CSV result exports
 │   ├── losses.py                 # Custom masked loss functions
-│   ├── model.py                  # DosePredictionModel trainer (optimized)
+│   ├── model.py                  # MONAI U-Net trainer (optimized)
+│   ├── hd_unet.py                # HD U-Net architecture (NEW)
+│   ├── hd_unet_model.py          # HD U-Net trainer (NEW)
 │   ├── transforms.py             # MONAI data transforms
 │   └── visualization.py          # Training plots and dose visualization
 ├── provided-data/                # Patient data
@@ -94,7 +109,8 @@ open-kbp/
 │   └── test-pats/                # 100 test patients
 ├── legacy/                       # Original TensorFlow/Keras code
 ├── results/                      # Training outputs (gitignored)
-├── train_monai.py                # Main training script (optimized)
+├── train_monai.py                # MONAI U-Net training script
+├── train_hd_unet.py              # HD U-Net training script (NEW)
 ├── requirements.txt              # Python dependencies
 └── README.md
 ```
@@ -146,6 +162,71 @@ python train_monai.py --epochs 100
 # With recommended optimizations
 python train_monai.py --epochs 100 --batch-size 4 --filters 64 --scheduler onecycle
 ```
+
+## HD U-Net Training
+
+The HD U-Net (Hierarchical Dense U-Net) offers enhanced feature extraction through dense blocks, attention gates, and deep supervision.
+
+### Model Variants
+
+| Variant | Parameters | VRAM (batch=2) | Recommended For |
+|---------|------------|----------------|------------------|
+| **lite** | ~200K | ~5 GB | Quick experiments, memory-constrained |
+| **standard** | ~2M | ~8 GB | Balanced quality/speed |
+| **large** | ~8M | ~11 GB | Best quality, more VRAM needed |
+
+### Quick Test
+
+```bash
+python train_hd_unet.py --data-fraction 0.1 --epochs 5 --variant lite
+```
+
+### Recommended Training (RTX 3060 12GB)
+
+```bash
+# Lite variant - fits comfortably, ~13 hours for 300 epochs
+python train_hd_unet.py \
+    --epochs 300 \
+    --variant lite \
+    --batch-size 2 \
+    --grad-accum 8 \
+    --lr 2e-4 \
+    --scheduler onecycle \
+    --warmup-epochs 30 \
+    --save-freq 50 \
+    --grad-checkpoint
+```
+
+### Background Training
+
+```bash
+# Run in background with logs
+nohup python train_hd_unet.py \
+    --epochs 300 \
+    --variant lite \
+    --batch-size 2 \
+    --grad-accum 8 \
+    --lr 2e-4 \
+    --scheduler onecycle \
+    --warmup-epochs 30 \
+    --save-freq 50 \
+    --grad-checkpoint \
+    > training.log 2>&1 &
+
+# Monitor progress
+tail -f training.log
+```
+
+### HD U-Net Specific Options
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--variant` | `standard` | Model variant: lite, standard, large |
+| `--init-features` | `48` | Initial features (custom config) |
+| `--growth-rate` | `16` | Dense block growth rate |
+| `--no-attention` | - | Disable attention gates |
+| `--no-deep-supervision` | - | Disable deep supervision |
+| `--dropout` | `0.2` | Dropout rate |
 
 ## RTX 3060 Optimization Guide
 
