@@ -12,7 +12,7 @@ A MONAI-based 3D U-Net implementation for predicting radiation dose distribution
 
 ![](read-me-images/pipeline.png)
 
-## Citation
+## Citation.
 
 If you use this dataset or code, please cite the original paper:
 
